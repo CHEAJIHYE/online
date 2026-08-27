@@ -35,7 +35,11 @@ DEFAULT_DATA = {
 
 STATUS_LIST = ["제안", "진행", "미선정", "종료"]
 CATEGORY_LIST = ["개인", "공동"]
-ADMIN_STATUS_LIST = ["등록", "★완료★"]
+ADMIN_STATUS_LIST = ["등록", "진행", "완료", "취합", "공지"]
+STATUS_ICONS = {
+    "등록": "📝", "진행": "🔄", "완료": "✅", "취합": "🗂️", "공지": "📢",
+    "제안": "💡", "미선정": "🚫", "종료": "🏁",
+}
 
 # 자주 쓰이는 색상 12개 (이름, 헥스코드)
 PRESET_COLORS = [
@@ -82,6 +86,16 @@ def sorted_member_names_by_position(data):
     ]
 
 
+def sorted_member_display_by_position(data):
+    """직위(서열) 기준 정렬 후 '이름 직책' 형태로 반환 (투표 선택지 자동 채우기용)."""
+    members = data["members"]
+    ordered = sorted(
+        members,
+        key=lambda m: (POSITION_RANK.get(m.get("position", "사원"), 999), m["name"]),
+    )
+    return [f"{m['name']} {m.get('position', '사원')}" for m in ordered]
+
+
 def load_data():
     if not os.path.exists(DATA_PATH):
         save_data(DEFAULT_DATA)
@@ -98,6 +112,8 @@ def load_data():
         m.setdefault("position", "사원")
     for p in data["admin_posts"]:
         p.setdefault("status", "등록")
+        if p["status"] == "★완료★":
+            p["status"] = "완료"
     return data
 
 
@@ -315,12 +331,19 @@ if page == "대시보드":
     st.markdown("# 🌐 온라인팀")
     st.caption("일정 · 안건 · 투표를 한 곳에서 관리합니다.")
 
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("등록된 일정", len(data["schedules"]))
-    c2.metric("제안 중 행사", len([p for p in data["event_posts"] if p["status"] == "제안"]))
-    c3.metric("진행 중 행사", len([p for p in data["event_posts"] if p["status"] == "진행"]))
-    c4.metric("종료된 행사", len([p for p in data["event_posts"] if p["status"] == "종료"]))
-    c5.metric("온라인팀(관리) 등록", len([p for p in data["admin_posts"] if p.get("status", "등록") == "등록"]))
+    st.metric("🗓️ 등록된 일정", len(data["schedules"]))
+
+    st.markdown("#### 📌 온라인팀(행사)")
+    ec1, ec2, ec3 = st.columns(3)
+    ec1.metric("💡 제안 중 행사", len([p for p in data["event_posts"] if p["status"] == "제안"]))
+    ec2.metric("🔄 진행 중 행사", len([p for p in data["event_posts"] if p["status"] == "진행"]))
+    ec3.metric("🏁 종료된 행사", len([p for p in data["event_posts"] if p["status"] == "종료"]))
+
+    st.markdown("#### ⚙️ 온라인팀(관리)")
+    ac1, ac2, ac3 = st.columns(3)
+    ac1.metric("📝 등록", len([p for p in data["admin_posts"] if p.get("status", "등록") == "등록"]))
+    ac2.metric("🔄 진행", len([p for p in data["admin_posts"] if p.get("status", "등록") == "진행"]))
+    ac3.metric("✅ 완료", len([p for p in data["admin_posts"] if p.get("status", "등록") == "완료"]))
 
     st.markdown("### 🗓️ 오늘 이후 일정")
     today = date.today()
@@ -531,7 +554,8 @@ elif page == "온라인팀(행사)":
     st.caption("행사와 관련된 아이디어, 진행 사항, 선정 결과를 관리합니다.")
 
     filter_status = st.radio(
-        "보기", ["전체"] + STATUS_LIST, horizontal=True, key="event_filter_status"
+        "보기", ["전체"] + STATUS_LIST, horizontal=True, key="event_filter_status",
+        format_func=lambda s: s if s == "전체" else f"{STATUS_ICONS.get(s, '')} {s}",
     )
     only_mine = st.checkbox("내가 쓴 글만 보기")
 
@@ -639,7 +663,10 @@ elif page == "온라인팀(관리)":
     st.markdown("# ⚙️ 온라인팀(관리)")
     st.caption("공지·안건 게시글과 투표를 함께 관리합니다.")
 
-    view_filter = st.radio("보기", ["전체"] + ADMIN_STATUS_LIST, horizontal=True, key="admin_view_filter")
+    view_filter = st.radio(
+        "보기", ["전체"] + ADMIN_STATUS_LIST, horizontal=True, key="admin_view_filter",
+        format_func=lambda s: s if s == "전체" else f"{STATUS_ICONS.get(s, '')} {s}",
+    )
 
     posts = sorted(data["admin_posts"], key=lambda p: p["created_at"], reverse=True)
     if view_filter != "전체":
@@ -655,6 +682,7 @@ elif page == "온라인팀(관리)":
                 cur_status = p.get("status", "등록")
                 new_status = st.selectbox(
                     "상태", ADMIN_STATUS_LIST, index=ADMIN_STATUS_LIST.index(cur_status),
+                    format_func=lambda s: f"{STATUS_ICONS.get(s, '')} {s}",
                     key=f"admin_status_{p['id']}", label_visibility="collapsed",
                 )
                 if new_status != cur_status:
@@ -686,6 +714,10 @@ elif page == "온라인팀(관리)":
             else:
                 if p.get("content"):
                     st.write(p["content"])
+                for img in p.get("images", []):
+                    render_attachment(img, key_prefix=f"admin_img_{p['id']}")
+                for f_ in p.get("files", []):
+                    render_attachment(f_, key_prefix=f"admin_file_{p['id']}")
 
             if p.get("vote"):
                 vote = p["vote"]
@@ -724,11 +756,21 @@ elif page == "온라인팀(관리)":
                     st.rerun()
 
                 st.markdown("**📊 현재 결과**")
+                result_html = "<div style='margin-bottom:6px'>"
                 for o in options:
                     cnt = len(o["voters"])
                     pct = int(cnt / total_voters * 100) if total_voters else 0
-                    st.write(f"{o['text']} — {cnt}표")
-                    st.progress(min(pct, 100) / 100 if pct else 0.0)
+                    result_html += (
+                        "<div style='margin-bottom:3px'>"
+                        "<div style='display:flex;justify-content:space-between;"
+                        f"font-size:12.5px;color:#333'><span>{o['text']}</span>"
+                        f"<span>{cnt}표 ({pct}%)</span></div>"
+                        "<div style='background:#eee;border-radius:4px;height:7px;overflow:hidden'>"
+                        f"<div style='width:{pct}%;background:#3B82F6;height:100%'></div></div>"
+                        "</div>"
+                    )
+                result_html += "</div>"
+                st.markdown(result_html, unsafe_allow_html=True)
 
             st.markdown("**💬 댓글**")
             for c in p.get("comments", []):
@@ -747,7 +789,18 @@ elif page == "온라인팀(관리)":
     st.markdown("---")
     st.markdown("### ➕ 새 글 작성")
     a_title = st.text_input("제목", key="new_admin_title")
+    a_status = st.selectbox(
+        "상태", ADMIN_STATUS_LIST, key="new_admin_status",
+        format_func=lambda s: f"{STATUS_ICONS.get(s, '')} {s}",
+    )
     a_content = st.text_area("내용", key="new_admin_content", height=140)
+    a_images = st.file_uploader(
+        "이미지 첨부 (드래그앤드롭 또는 클립보드 붙여넣기 지원)",
+        type=["png", "jpg", "jpeg", "gif", "webp"],
+        accept_multiple_files=True,
+        key="new_admin_images",
+    )
+    a_files = st.file_uploader("첨부파일", accept_multiple_files=True, key="new_admin_files")
 
     add_vote = st.checkbox("🗳️ 이 게시글에 투표 추가하기", key="new_admin_add_vote")
 
@@ -766,7 +819,7 @@ elif page == "온라인팀(관리)":
                 st.session_state["vote_options_text"] = "\n".join(tpl["options"])
                 st.rerun()
         if tcol3.button("👥 구성원 불러오기", use_container_width=True):
-            st.session_state["vote_options_text"] = "\n".join(sorted_member_names_by_position(data))
+            st.session_state["vote_options_text"] = "\n".join(sorted_member_display_by_position(data))
             st.rerun()
 
         st.session_state.setdefault("vote_options_text", "")
@@ -816,10 +869,12 @@ elif page == "온라인팀(관리)":
                 "id": new_id(),
                 "title": a_title.strip(),
                 "content": a_content,
-                "status": "등록",
+                "status": a_status,
                 "author": current_user,
                 "created_at": now_str(),
                 "comments": [],
+                "images": [file_to_b64(f_) for f_ in (a_images or [])],
+                "files": [file_to_b64(f_) for f_ in (a_files or [])],
             }
             if vote_field:
                 new_post["vote"] = vote_field
