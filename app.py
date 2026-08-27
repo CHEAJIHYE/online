@@ -23,9 +23,9 @@ DATA_PATH = os.path.join(os.path.dirname(__file__), "online_team_data.json")
 
 DEFAULT_DATA = {
     "members": [
-        {"name": "김담이", "color": "#3B82F6"},
-        {"name": "천지현", "color": "#F5B301"},
-        {"name": "채지혜", "color": "#EC4899"},
+        {"name": "김담이", "color": "#3B82F6", "position": "사원"},
+        {"name": "천지현", "color": "#F5B301", "position": "과장"},
+        {"name": "채지혜", "color": "#EC4899", "position": "대리"},
     ],
     "schedules": [],
     "event_posts": [],
@@ -35,6 +35,51 @@ DEFAULT_DATA = {
 
 STATUS_LIST = ["제안", "진행", "미선정", "종료"]
 CATEGORY_LIST = ["개인", "공동"]
+ADMIN_STATUS_LIST = ["등록", "★완료★"]
+
+# 자주 쓰이는 색상 12개 (이름, 헥스코드)
+PRESET_COLORS = [
+    ("빨강", "#EF4444"),
+    ("주황", "#F97316"),
+    ("노랑", "#EAB308"),
+    ("연두", "#84CC16"),
+    ("초록", "#22C55E"),
+    ("청록", "#14B8A6"),
+    ("하늘", "#0EA5E9"),
+    ("파랑", "#3B82F6"),
+    ("남색", "#6366F1"),
+    ("보라", "#8B5CF6"),
+    ("분홍", "#EC4899"),
+    ("갈색", "#92400E"),
+]
+
+# 구성원 추가 시 드롭다운에 노출되는 직책/직위 목록
+POSITION_OPTIONS = [
+    "상무", "차장", "과장", "사원", "이사", "부장",
+    "부장/팀장", "대리", "부장/수석팀장", "과장/파트장",
+    "차장/팀장", "대리/파트장",
+]
+
+# 구성원 불러오기 정렬 기준(직위 서열, 높은 순). 회사마다 서열 기준이 다를 수 있어
+# 일반적인 직급 체계를 기준으로 임의 배치했습니다 — 필요하면 이 리스트 순서를 조정해주세요.
+POSITION_ORDER = [
+    "상무", "이사", "부장/수석팀장", "부장/팀장", "부장",
+    "차장/팀장", "차장", "과장/파트장", "과장",
+    "대리/파트장", "대리", "사원",
+]
+POSITION_RANK = {p: i for i, p in enumerate(POSITION_ORDER)}
+
+
+def sorted_member_names_by_position(data):
+    """직위(서열) 기준 정렬 후, 같은 직위 내에서는 이름 가나다순."""
+    members = data["members"]
+    return [
+        m["name"]
+        for m in sorted(
+            members,
+            key=lambda m: (POSITION_RANK.get(m.get("position", "사원"), 999), m["name"]),
+        )
+    ]
 
 
 def load_data():
@@ -48,6 +93,11 @@ def load_data():
             data = json.loads(json.dumps(DEFAULT_DATA))
     for k, v in DEFAULT_DATA.items():
         data.setdefault(k, v if not isinstance(v, list) else [])
+    # 마이그레이션: 기존 데이터에 없는 필드 보정
+    for m in data["members"]:
+        m.setdefault("position", "사원")
+    for p in data["admin_posts"]:
+        p.setdefault("status", "등록")
     return data
 
 
@@ -114,6 +164,10 @@ def render_attachment(att, key_prefix=""):
 # 사이드바
 # --------------------------------------------------------------------------
 data = get_data()
+
+# 위젯이 그려지기 전에 처리해야 하는 초기화 플래그
+if st.session_state.pop("_reset_vote_options", False):
+    st.session_state["vote_options_text"] = ""
 
 with st.sidebar:
     st.markdown("## 🌐 온라인팀")
@@ -261,10 +315,12 @@ if page == "대시보드":
     st.markdown("# 🌐 온라인팀")
     st.caption("일정 · 안건 · 투표를 한 곳에서 관리합니다.")
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("등록된 일정", len(data["schedules"]))
-    c2.metric("진행 중 안건", len([p for p in data["event_posts"] if p["status"] == "진행"]))
-    c3.metric("진행 중 투표", len([p for p in data["admin_posts"] if p.get("kind") == "vote"]))
+    c2.metric("제안 중 행사", len([p for p in data["event_posts"] if p["status"] == "제안"]))
+    c3.metric("진행 중 행사", len([p for p in data["event_posts"] if p["status"] == "진행"]))
+    c4.metric("종료된 행사", len([p for p in data["event_posts"] if p["status"] == "종료"]))
+    c5.metric("온라인팀(관리) 등록", len([p for p in data["admin_posts"] if p.get("status", "등록") == "등록"]))
 
     st.markdown("### 🗓️ 오늘 이후 일정")
     today = date.today()
@@ -583,30 +639,39 @@ elif page == "온라인팀(관리)":
     st.markdown("# ⚙️ 온라인팀(관리)")
     st.caption("공지·안건 게시글과 투표를 함께 관리합니다.")
 
-    view_filter = st.radio("보기", ["전체", "게시글", "투표"], horizontal=True, key="admin_view_filter")
+    view_filter = st.radio("보기", ["전체"] + ADMIN_STATUS_LIST, horizontal=True, key="admin_view_filter")
 
     posts = sorted(data["admin_posts"], key=lambda p: p["created_at"], reverse=True)
-    if view_filter == "게시글":
-        posts = [p for p in posts if p.get("kind") != "vote"]
-    elif view_filter == "투표":
-        posts = [p for p in posts if p.get("kind") == "vote"]
+    if view_filter != "전체":
+        posts = [p for p in posts if p.get("status", "등록") == view_filter]
 
     if not posts:
         st.info("표시할 게시글이 없습니다.")
 
     for p in posts:
         with st.container(border=True):
-            top_l, top_r = st.columns([4, 1])
-            top_l.markdown(f"### {'🗳️ ' if p.get('kind') == 'vote' else ''}{p['title']}")
+            top_l, top_r = st.columns([1, 1])
+            with top_l:
+                cur_status = p.get("status", "등록")
+                new_status = st.selectbox(
+                    "상태", ADMIN_STATUS_LIST, index=ADMIN_STATUS_LIST.index(cur_status),
+                    key=f"admin_status_{p['id']}", label_visibility="collapsed",
+                )
+                if new_status != cur_status:
+                    p["status"] = new_status
+                    persist()
+                    st.rerun()
             with top_r:
                 b1, b2 = st.columns(2)
-                if b1.button("수정", key=f"aedit_{p['id']}"):
+                if b1.button("수정", key=f"aedit_{p['id']}", use_container_width=True):
                     st.session_state[f"admin_editing_{p['id']}"] = not st.session_state.get(f"admin_editing_{p['id']}", False)
                     st.rerun()
-                if b2.button("삭제", key=f"adel_{p['id']}"):
+                if b2.button("삭제", key=f"adel_{p['id']}", use_container_width=True):
                     data["admin_posts"] = [x for x in data["admin_posts"] if x["id"] != p["id"]]
                     persist()
                     st.rerun()
+
+            st.markdown(f"### {'🗳️ ' if p.get('vote') else ''}{p['title']}")
             st.caption(f"작성자 {p['author']} · {p['created_at']}")
 
             if st.session_state.get(f"admin_editing_{p['id']}"):
@@ -622,9 +687,9 @@ elif page == "온라인팀(관리)":
                 if p.get("content"):
                     st.write(p["content"])
 
-            if p.get("kind") == "vote":
+            if p.get("vote"):
                 vote = p["vote"]
-                st.markdown(f"**{vote['question']}**")
+                st.markdown(f"**🗳️ {vote['question']}**")
                 options = vote["options"]
                 my_votes = [i for i, o in enumerate(options) if current_user in o["voters"]]
                 total_voters = len({v for o in options for v in o["voters"]}) or 1
@@ -681,75 +746,39 @@ elif page == "온라인팀(관리)":
 
     st.markdown("---")
     st.markdown("### ➕ 새 글 작성")
-    write_type = st.radio("작성 유형", ["일반 게시글", "투표 만들기"], horizontal=True, key="admin_write_type")
+    a_title = st.text_input("제목", key="new_admin_title")
+    a_content = st.text_area("내용", key="new_admin_content", height=140)
 
-    if write_type == "일반 게시글":
-        a_title = st.text_input("제목", key="new_admin_title")
-        a_content = st.text_area("내용", key="new_admin_content", height=140)
-        if st.button("게시글 등록", type="primary", key="submit_admin_post"):
-            if not a_title.strip():
-                st.warning("제목을 입력해주세요.")
-            else:
-                data["admin_posts"].append(
-                    {
-                        "id": new_id(),
-                        "kind": "post",
-                        "title": a_title.strip(),
-                        "content": a_content,
-                        "author": current_user,
-                        "created_at": now_str(),
-                        "comments": [],
-                    }
-                )
-                persist()
-                st.success("게시글이 등록되었습니다.")
-                st.rerun()
+    add_vote = st.checkbox("🗳️ 이 게시글에 투표 추가하기", key="new_admin_add_vote")
 
-    else:
-        st.markdown("#### 🗳️ 투표 만들기")
+    v_multi = False
+    if add_vote:
+        st.markdown("#### 투표 설정")
+        st.caption("투표 문항은 위의 '제목'이 그대로 사용됩니다. 선택지를 아래에 입력해주세요.")
+
         templates = data["vote_templates"]
         template_names = ["(직접 입력)"] + [t["name"] for t in templates]
-        chosen_template = st.selectbox("투표 양식 불러오기", template_names, key="vote_template_select")
-        prefill_options = ""
-        if chosen_template != "(직접 입력)":
-            tpl = next(t for t in templates if t["name"] == chosen_template)
-            prefill_options = "\n".join(tpl["options"])
+        tcol1, tcol2, tcol3 = st.columns([2, 1, 1])
+        chosen_template = tcol1.selectbox("투표 양식 불러오기", template_names, key="vote_template_select")
+        if tcol2.button("양식 불러오기", use_container_width=True):
+            if chosen_template != "(직접 입력)":
+                tpl = next(t for t in templates if t["name"] == chosen_template)
+                st.session_state["vote_options_text"] = "\n".join(tpl["options"])
+                st.rerun()
+        if tcol3.button("👥 구성원 불러오기", use_container_width=True):
+            st.session_state["vote_options_text"] = "\n".join(sorted_member_names_by_position(data))
+            st.rerun()
 
-        v_question = st.text_input("투표 제목 / 질문", key="new_vote_question")
+        st.session_state.setdefault("vote_options_text", "")
         v_options_text = st.text_area(
-            "선택지 (한 줄에 하나씩 입력)", value=prefill_options, key="new_vote_options", height=120
+            "선택지 (한 줄에 하나씩 입력)", key="vote_options_text", height=120
         )
         v_multi = st.checkbox("복수 선택 허용", key="new_vote_multi")
 
-        if st.button("투표 게시글 등록", type="primary", key="submit_vote_post"):
-            opts = [o.strip() for o in v_options_text.split("\n") if o.strip()]
-            if not v_question.strip() or len(opts) < 2:
-                st.warning("질문과 2개 이상의 선택지를 입력해주세요.")
-            else:
-                data["admin_posts"].append(
-                    {
-                        "id": new_id(),
-                        "kind": "vote",
-                        "title": v_question.strip(),
-                        "content": "",
-                        "author": current_user,
-                        "created_at": now_str(),
-                        "comments": [],
-                        "vote": {
-                            "question": v_question.strip(),
-                            "multi": v_multi,
-                            "options": [{"text": o, "voters": []} for o in opts],
-                        },
-                    }
-                )
-                persist()
-                st.success("투표가 등록되었습니다.")
-                st.rerun()
-
-        with st.expander("📋 투표 양식(템플릿) 관리"):
-            tpl_name = st.text_input("현재 선택지를 템플릿으로 저장 (템플릿 이름)", key="tpl_save_name")
+        with st.expander("📋 현재 선택지를 투표 양식(템플릿)으로 저장"):
+            tpl_name = st.text_input("템플릿 이름", key="tpl_save_name")
             if st.button("템플릿으로 저장"):
-                opts = [o.strip() for o in v_options_text.split("\n") if o.strip()]
+                opts = [o.strip() for o in st.session_state["vote_options_text"].split("\n") if o.strip()]
                 if not tpl_name.strip() or len(opts) < 1:
                     st.warning("템플릿 이름과 선택지를 입력해주세요.")
                 else:
@@ -758,7 +787,6 @@ elif page == "온라인팀(관리)":
                     persist()
                     st.success("템플릿이 저장되었습니다.")
                     st.rerun()
-
             if templates:
                 st.write("저장된 템플릿")
                 for t in templates:
@@ -769,6 +797,38 @@ elif page == "온라인팀(관리)":
                         persist()
                         st.rerun()
 
+    if st.button("게시글 등록", type="primary", key="submit_admin_post"):
+        if not a_title.strip():
+            st.warning("제목을 입력해주세요.")
+        else:
+            vote_field = None
+            if add_vote:
+                opts = [o.strip() for o in st.session_state.get("vote_options_text", "").split("\n") if o.strip()]
+                if len(opts) < 2:
+                    st.warning("투표 선택지를 2개 이상 입력해주세요.")
+                    st.stop()
+                vote_field = {
+                    "question": a_title.strip(),
+                    "multi": v_multi,
+                    "options": [{"text": o, "voters": []} for o in opts],
+                }
+            new_post = {
+                "id": new_id(),
+                "title": a_title.strip(),
+                "content": a_content,
+                "status": "등록",
+                "author": current_user,
+                "created_at": now_str(),
+                "comments": [],
+            }
+            if vote_field:
+                new_post["vote"] = vote_field
+            data["admin_posts"].append(new_post)
+            persist()
+            st.session_state["_reset_vote_options"] = True
+            st.success("게시글이 등록되었습니다.")
+            st.rerun()
+
 # --------------------------------------------------------------------------
 # 페이지: 구성원 관리
 # --------------------------------------------------------------------------
@@ -776,17 +836,61 @@ elif page == "구성원 관리":
     st.markdown("# ⚙️ 구성원 관리")
 
     st.markdown("### 구성원 추가")
-    c1, c2, c3 = st.columns([3, 1, 1])
-    new_name = c1.text_input("이름", key="new_member_name", label_visibility="collapsed", placeholder="이름")
-    new_color = c2.color_picker("개인 색상", value="#3B82F6", key="new_member_color", label_visibility="collapsed")
-    if c3.button("추가", use_container_width=True):
+    new_name = st.text_input("이름", key="new_member_name", placeholder="이름")
+    new_position = st.selectbox("직책/직위", POSITION_OPTIONS, key="new_member_position")
+
+    used_colors = {m["color"] for m in data["members"]}
+    available_presets = [c for c in PRESET_COLORS if c[1] not in used_colors]
+
+    if "member_color_choice" not in st.session_state:
+        st.session_state.member_color_choice = available_presets[0][1] if available_presets else "custom"
+
+    st.markdown("**개인 색상 선택** (이미 다른 구성원이 사용 중인 색상은 표시되지 않습니다)")
+    swatch_cols = st.columns(6)
+    for i, (cname, hexcode) in enumerate(available_presets):
+        with swatch_cols[i % 6]:
+            selected = st.session_state.member_color_choice == hexcode
+            border = "3px solid #111827" if selected else "1px solid #ddd"
+            st.markdown(
+                f"<div style='width:100%;height:34px;border-radius:8px;background:{hexcode};"
+                f"border:{border};margin-bottom:2px'></div>",
+                unsafe_allow_html=True,
+            )
+            if st.button(cname, key=f"swatch_{hexcode}", use_container_width=True):
+                st.session_state.member_color_choice = hexcode
+                st.rerun()
+
+    other_selected = st.session_state.member_color_choice == "custom"
+    other_col = swatch_cols[len(available_presets) % 6] if len(available_presets) % 6 != 0 else st.columns(6)[0]
+    with other_col:
+        border = "3px solid #111827" if other_selected else "1px dashed #999"
+        st.markdown(
+            f"<div style='width:100%;height:34px;border-radius:8px;"
+            "background:repeating-linear-gradient(45deg,#eee,#eee 4px,#fff 4px,#fff 8px);"
+            f"border:{border};margin-bottom:2px'></div>",
+            unsafe_allow_html=True,
+        )
+        if st.button("기타", key="swatch_custom", use_container_width=True):
+            st.session_state.member_color_choice = "custom"
+            st.rerun()
+
+    final_color = st.session_state.member_color_choice
+    if final_color == "custom":
+        final_color = st.color_picker("기타 색상 직접 선택", value="#999999", key="member_custom_color")
+
+    if st.button("추가", type="primary"):
         if not new_name.strip():
             st.warning("이름을 입력해주세요.")
         elif new_name.strip() in member_names(data):
             st.warning("이미 존재하는 구성원입니다.")
+        elif final_color in used_colors:
+            st.warning("이미 사용 중인 색상입니다. 다른 색상을 선택해주세요.")
         else:
-            data["members"].append({"name": new_name.strip(), "color": new_color})
+            data["members"].append(
+                {"name": new_name.strip(), "color": final_color, "position": new_position}
+            )
             persist()
+            del st.session_state["member_color_choice"]
             st.success(f"{new_name.strip()}님이 추가되었습니다.")
             st.rerun()
 
@@ -795,13 +899,14 @@ elif page == "구성원 관리":
     if not data["members"]:
         st.info("등록된 구성원이 없습니다.")
     for m in data["members"]:
-        c1, c2, c3 = st.columns([1, 5, 1])
+        c1, c2, c3, c4 = st.columns([1, 3, 2, 1])
         c1.markdown(
             f"<div style='width:22px;height:22px;border-radius:50%;background:{m['color']}'></div>",
             unsafe_allow_html=True,
         )
         c2.write(m["name"])
-        if c3.button("삭제", key=f"member_del_{m['name']}"):
+        c3.caption(m.get("position", "사원"))
+        if c4.button("삭제", key=f"member_del_{m['name']}"):
             data["members"] = [x for x in data["members"] if x["name"] != m["name"]]
             persist()
             st.success(f"{m['name']}님이 삭제되었습니다.")
